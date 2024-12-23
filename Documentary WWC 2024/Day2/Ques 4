@@ -1,0 +1,117 @@
+#include <iostream>
+#include <memory>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+#include <chrono>
+
+struct Task {
+    int taskID;
+    int priority;
+    int executionTime; // in milliseconds
+    std::shared_ptr<Task> next;
+
+    Task(int id, int prio, int execTime)
+        : taskID(id), priority(prio), executionTime(execTime), next(nullptr) {}
+};
+
+class TaskScheduler {
+private:
+    std::shared_ptr<Task> head;
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::atomic<bool> running;
+
+    void insertTask(std::shared_ptr<Task> newTask) {
+        if (!head || newTask->priority > head->priority) {
+            newTask->next = head;
+            head = newTask;
+            return;
+        }
+
+        auto current = head;
+        while (current->next && current->next->priority >= newTask->priority) {
+            current = current->next;
+        }
+        newTask->next = current->next;
+        current->next = newTask;
+    }
+
+    void executeTasks() {
+        while (running) {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [&]() { return head != nullptr || !running; });
+
+            if (!running) break;
+
+            auto task = head;
+            head = head->next;
+            lock.unlock();
+
+            std::cout << "Executing Task ID: " << task->taskID
+                      << " Priority: " << task->priority
+                      << " Execution Time: " << task->executionTime << "ms" << std::endl;
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(task->executionTime));
+
+            lock.lock();
+        }
+    }
+
+public:
+    TaskScheduler() : head(nullptr), running(false) {}
+
+    ~TaskScheduler() {
+        stop();
+    }
+
+    void start() {
+        running = true;
+        std::thread(&TaskScheduler::executeTasks, this).detach();
+    }
+
+    void stop() {
+        running = false;
+        cv.notify_all();
+    }
+
+    void addTask(int taskID, int priority, int executionTime) {
+        auto newTask = std::make_shared<Task>(taskID, priority, executionTime);
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            insertTask(newTask);
+        }
+        cv.notify_one();
+    }
+
+    void printTaskList() {
+        std::lock_guard<std::mutex> lock(mtx);
+        auto current = head;
+        std::cout << "Current Task List:" << std::endl;
+        while (current) {
+            std::cout << "Task ID: " << current->taskID
+                      << " Priority: " << current->priority
+                      << " Execution Time: " << current->executionTime << "ms" << std::endl;
+            current = current->next;
+        }
+    }
+};
+
+int main() {
+    TaskScheduler scheduler;
+
+    scheduler.start();
+
+    scheduler.addTask(1, 3, 1000);
+    scheduler.addTask(2, 1, 500);
+    scheduler.addTask(3, 2, 700);
+
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+
+    scheduler.printTaskList();
+
+    scheduler.stop();
+
+    return 0;
+}
